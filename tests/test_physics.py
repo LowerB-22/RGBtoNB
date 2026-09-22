@@ -59,7 +59,7 @@ def test_zero_intensity_has_no_sensor_signal():
 
 
 def test_white_continuum_contributes_to_all_ideal_channels():
-    assert np.array_equal(continuum_channel_signals(12), np.array([3360.0, 3360.0, 3360.0]))
+    assert np.array_equal(continuum_channel_signals(12), np.array([4.0, 4.0, 4.0]))
 
 
 def test_white_continuum_is_sensor_weighted():
@@ -74,6 +74,12 @@ def test_continuum_shifts_ideal_combined_color():
     with_continuum = sensor_channel_signals({"O III": 65}, False, 6.0, 100)
     assert with_continuum[0] > line_only[0]
     assert not np.isclose(line_only[1] / line_only.sum(), with_continuum[1] / with_continuum.sum())
+
+
+def test_line_and_continuum_sliders_share_integrated_scale():
+    line = sensor_channel_signals({"O III": 12}, False, 6.0)
+    continuum = continuum_channel_signals(12, False)
+    assert np.isclose(line.sum(), continuum.sum())
 
 
 def test_white_continuum_has_scatter_coordinates():

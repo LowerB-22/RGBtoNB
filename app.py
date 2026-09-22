@@ -146,25 +146,41 @@ spectral_rgb = np.array([
     wavelength_to_rgb_channels(wavelength)
     for wavelength in strip_wavelengths
 ])
-spectro_signal = np.zeros(strip_wavelengths.size)
+line_signal = np.zeros(strip_wavelengths.size)
+continuum_signal = np.zeros(strip_wavelengths.size)
 if white_continuum > 0:
-    spectro_signal += white_continuum
+    continuum_signal += white_continuum / (strip_wavelengths[-1] - strip_wavelengths[0])
 for name, channel in CHANNELS.items():
-    line_profile = super_gaussian_profile(
+    profile_shape = super_gaussian_profile(
         strip_wavelengths,
         channel["wavelength_nm"],
         bandwidth,
-    ) * intensities[name]
-    spectro_signal += line_profile
+    )
+    line_profile = profile_shape / np.trapezoid(profile_shape, strip_wavelengths) * intensities[name]
+    line_signal += line_profile
 if use_sensor_response:
     sensor_rgb = np.column_stack([
         sensor_response_curve(sensor_channel, strip_wavelengths)
         for sensor_channel in ("RED", "GREEN", "BLUE")
     ])
     spectral_rgb *= sensor_rgb
-spectro_image = np.clip(spectro_signal[:, None] * spectral_rgb, 0, None)
-if spectro_image.max() > 0:
-    spectro_image = np.rint(spectro_image / spectro_image.max() * 255).astype(np.uint8)
+    continuum_rgb = sensor_rgb
+else:
+    continuum_rgb = np.ones((strip_wavelengths.size, 3))
+spectro_image = np.maximum(
+    line_signal[:, None] * spectral_rgb
+    + continuum_signal[:, None] * continuum_rgb,
+    0,
+)
+profile_reference = super_gaussian_profile(
+    np.linspace(-4 * bandwidth, 4 * bandwidth, 401),
+    0.0,
+    bandwidth,
+)
+reference_peak = 100 / np.trapezoid(profile_reference, np.linspace(-4 * bandwidth, 4 * bandwidth, 401))
+continuum_reference = 100 / (strip_wavelengths[-1] - strip_wavelengths[0])
+display_reference = max(reference_peak, continuum_reference)
+spectro_image = np.rint(np.clip(spectro_image / display_reference * 255, 0, 255)).astype(np.uint8)
 spectro_image = np.repeat(spectro_image[None, :, :], 36, axis=0)
 strip_figure = go.Figure(go.Image(z=spectro_image))
 strip_figure.update_layout(
@@ -305,3 +321,10 @@ scatter_figure.update_layout(
 )
 st.markdown('<div class="panel-title">LINE COLOR CONTRIBUTIONS</div>', unsafe_allow_html=True)
 st.plotly_chart(scatter_figure, use_container_width=True, config={"displayModeBar": False})
+
+st.markdown('<div class="panel-title">TOTAL COLOR MIXTURE</div>', unsafe_allow_html=True)
+st.markdown(
+    f'<div style="height:110px;background:{mixed_color};border:1px solid #ffffff55;border-radius:6px"></div>'
+    f'<p class="mono" style="color:#b7c8c2;font-size:.8rem">Linien + Kontinuum · {display_rgb_text} · {bit_depth}-Bit</p>',
+    unsafe_allow_html=True,
+)

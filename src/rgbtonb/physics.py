@@ -113,14 +113,14 @@ def continuum_channel_signals(
     """Return the RGB contribution of a flat white continuum."""
     if intensity <= 0:
         return np.zeros(3)
-    width = wavelength_range[1] - wavelength_range[0]
     if not use_sensor_response:
-        return np.full(3, intensity * width, dtype=float)
+        return np.full(3, intensity / 3.0, dtype=float)
     wavelengths = np.linspace(*wavelength_range, 1001)
     return intensity * np.array([
         np.trapezoid(interpolate_sensor_response(channel, wavelengths), wavelengths)
+        / (wavelength_range[1] - wavelength_range[0])
         for channel in ("RED", "GREEN", "BLUE")
-    ])
+    ]) / 3.0
 
 
 def integrated_sensor_signal(
@@ -133,7 +133,8 @@ def integrated_sensor_signal(
     if intensity <= 0:
         return 0.0
     wavelengths = np.linspace(center_nm - 4 * bandwidth_nm, center_nm + 4 * bandwidth_nm, 401)
-    line_profile = intensity * super_gaussian_profile(wavelengths, center_nm, bandwidth_nm)
+    profile = super_gaussian_profile(wavelengths, center_nm, bandwidth_nm)
+    line_profile = intensity * profile / np.trapezoid(profile, wavelengths)
     response = interpolate_sensor_response(channel, wavelengths)
     return float(np.trapezoid(line_profile * response, wavelengths))
 
@@ -173,8 +174,10 @@ def line_channel_signals(
         ])
     center_nm = CHANNELS[name]["wavelength_nm"]
     wavelengths = np.linspace(center_nm - 4 * bandwidth_nm, center_nm + 4 * bandwidth_nm, 401)
-    profile = intensity * super_gaussian_profile(wavelengths, center_nm, bandwidth_nm)
+    profile_shape = super_gaussian_profile(wavelengths, center_nm, bandwidth_nm)
+    profile = intensity * profile_shape / np.trapezoid(profile_shape, wavelengths)
     spectral_rgb = np.array([wavelength_to_rgb_channels(wavelength) for wavelength in wavelengths])
+    spectral_rgb /= np.maximum(spectral_rgb.sum(axis=1, keepdims=True), 1e-12)
     return np.trapezoid(profile[:, None] * spectral_rgb, wavelengths, axis=0)
 
 
