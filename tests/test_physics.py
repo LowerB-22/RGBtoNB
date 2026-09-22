@@ -1,6 +1,15 @@
 import numpy as np
 
-from src.rgbtonb.physics import CHANNELS, ideal_sensor_color, super_gaussian_profile, wavelength_to_rgb
+from src.rgbtonb.physics import (
+    CHANNELS,
+    SENSOR_CURVES,
+    integrated_sensor_signal,
+    ideal_sensor_color,
+    interpolate_sensor_response,
+    sensor_channel_signals,
+    super_gaussian_profile,
+    wavelength_to_rgb,
+)
 
 
 def test_spectral_colors_follow_wavelength_order():
@@ -12,6 +21,37 @@ def test_spectral_colors_follow_wavelength_order():
 def test_ideal_sensor_uses_intensities_without_response_correction():
     assert ideal_sensor_color({"H-alpha": 0, "O III": 0, "S II": 0, "He II": 0}) == "rgb(0, 0, 0)"
     assert ideal_sensor_color({"H-alpha": 100, "O III": 0, "S II": 0, "He II": 0}) == "rgb(255, 0, 0)"
+
+
+def test_sensor_response_mixes_all_sensor_channels():
+    intensities = {"H-alpha": 100, "O III": 0, "S II": 0, "He II": 0}
+    color = ideal_sensor_color(intensities, use_sensor_response=True)
+    assert color != "rgb(255, 0, 0)"
+    assert not color.startswith("rgb(255, ")
+
+
+def test_bandwidth_changes_effective_sensor_response():
+    narrow = integrated_sensor_signal("GREEN", 500.7, 1.0, 100)
+    wide = integrated_sensor_signal("GREEN", 500.7, 10.0, 100)
+    assert not np.isclose(narrow, wide)
+
+
+def test_zero_intensity_has_no_sensor_signal():
+    assert integrated_sensor_signal("RED", 656.3, 6.0, 0) == 0
+
+
+def test_sensor_channel_ratios_sum_to_one():
+    intensities = {"H-alpha": 80, "O III": 65, "S II": 55, "He II": 40}
+    signals = sensor_channel_signals(intensities, True, 6.0)
+    assert np.isclose(signals.sum() / signals.sum(), 1.0)
+
+
+def test_sensor_curves_are_smooth_and_bounded():
+    assert set(SENSOR_CURVES) == {"RED", "GREEN", "BLUE"}
+    wavelengths = np.linspace(450, 680, 1000)
+    response = interpolate_sensor_response("GREEN", wavelengths)
+    assert response.shape == wavelengths.shape
+    assert np.all((response >= 0) & (response <= 1))
 
 
 def test_super_gaussian_has_requested_fwhm():

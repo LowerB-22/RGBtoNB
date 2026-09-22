@@ -4,7 +4,13 @@ import streamlit as st
 
 st.set_page_config(page_title="RGBtoNB", page_icon="✦", layout="wide")
 
-from src.rgbtonb.physics import CHANNELS, ideal_sensor_color, super_gaussian_profile
+from src.rgbtonb.physics import (
+    CHANNELS,
+    ideal_sensor_color,
+    sensor_channel_signals,
+    sensor_response_curve,
+    super_gaussian_profile,
+)
 
 
 st.markdown(
@@ -47,13 +53,27 @@ st.markdown(
 with st.sidebar:
     st.markdown('<div class="kicker">SPECTRUM SETUP</div>', unsafe_allow_html=True)
     bandwidth = st.slider("Filterbandbreite (nm)", 1.0, 10.0, 6.0, 0.5)
+    use_sensor_response = st.toggle("Sensor-Empfindlichkeit anzeigen", value=False)
     st.divider()
     intensities = {
         name: st.slider(f"{name} Intensität", 0, 100, default)
         for name, default in {"H-alpha": 80, "O III": 65, "S II": 55, "He II": 40}.items()
     }
 
-mixed_color = ideal_sensor_color(intensities)
+mixed_color = ideal_sensor_color(intensities, use_sensor_response, bandwidth)
+sensor_rgb = sensor_channel_signals(intensities, use_sensor_response, bandwidth)
+sensor_total = sensor_rgb.sum()
+sensor_ratios = sensor_rgb / sensor_total if sensor_total > 0 else np.zeros(3)
+ratio_text = " · ".join(
+    f"{channel}/I = {ratio:.3f}"
+    for channel, ratio in zip(("R", "G", "B"), sensor_ratios)
+)
+color_title = "IMX571 SENSOR / RESULTING COLOR" if use_sensor_response else "IDEAL SENSOR / RESULTING COLOR"
+color_description = (
+    "Sensorantwort aus interpolierten IMX571-Kurven"
+    if use_sensor_response
+    else "100 % Empfindlichkeit über alle Wellenlängen"
+)
 
 wavelengths = np.linspace(430, 710, 1400)
 figure = go.Figure()
@@ -66,15 +86,29 @@ for name, channel in CHANNELS.items():
         line={"color": channel["color"], "width": 2.5},
     ))
 
+if use_sensor_response:
+    for sensor_channel, color in (("RED", "#ff4b4b"), ("GREEN", "#56d68a"), ("BLUE", "#6194ff")):
+        figure.add_trace(go.Scatter(
+            x=wavelengths,
+            y=sensor_response_curve(sensor_channel, wavelengths) * 100,
+            name=f"Sensor {sensor_channel}",
+            line={"color": color, "width": 1.5, "dash": "dot"},
+            opacity=0.8,
+        ))
+
 figure.update_layout(
     height=540,
     margin={"l": 0, "r": 10, "t": 10, "b": 0},
     template="plotly_dark",
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
-    legend={"orientation": "h", "y": 1.08},
+    legend={
+        "orientation": "h",
+        "y": 1.08,
+        "font": {"color": "#dce9e4", "size": 14},
+    },
     xaxis={"title": "Wellenlänge (nm)", "gridcolor": "#1b302e"},
-    yaxis={"title": "relative Intensität", "gridcolor": "#1b302e", "range": [0, 105]},
+    yaxis={"title": "relative Intensität / QE (%)", "gridcolor": "#1b302e", "range": [0, 105]},
 )
 
 st.markdown('<div class="panel"><div class="panel-title">EMISSION LINES / SUPER-GAUSSIAN PROFILE</div>', unsafe_allow_html=True)
@@ -84,9 +118,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown('<div class="panel"><div class="panel-title">IDEAL SENSOR / RESULTING COLOR</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="panel"><div class="panel-title">{color_title}</div>', unsafe_allow_html=True)
 st.markdown(
     f'<div style="height:110px;background:{mixed_color};border:1px solid #ffffff55;border-radius:6px"></div>'
-    f'<p class="mono" style="color:#b7c8c2;font-size:.8rem">100 % Empfindlichkeit über alle Wellenlängen · {mixed_color}</p></div>',
+    f'<p class="mono" style="color:#b7c8c2;font-size:.8rem">{color_description} · {mixed_color}<br>{ratio_text} · I = R + G + B</p></div>',
     unsafe_allow_html=True,
 )

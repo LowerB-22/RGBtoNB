@@ -1,5 +1,8 @@
 """Small spectral-profile helpers for the narrowband visualizer."""
 
+import json
+from pathlib import Path
+
 import numpy as np
 
 
@@ -35,19 +38,125 @@ def wavelength_to_rgb(wavelength_nm: float) -> str:
 
 CHANNELS = {
     "H-alpha": {"wavelength_nm": 656.3, "color": wavelength_to_rgb(656.3)},
-    "O III": {"wavelength_nm": 500.7, "color": "#00d98a"},
+    "O III": {"wavelength_nm": 500.7, "color": wavelength_to_rgb(500.7)},
     "S II": {"wavelength_nm": 672.4, "color": wavelength_to_rgb(672.4)},
     "He II": {"wavelength_nm": 468.6, "color": wavelength_to_rgb(468.6)},
 }
 
 
-def ideal_sensor_color(intensities: dict[str, float]) -> str:
-    """Mix line colors with unchanged intensities for an ideal 100% sensor."""
+def _load_sensor_curves() -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    data_path = Path(__file__).resolve().parents[2] / "sensor_data" / "Sony_IMX571.json"
+    with data_path.open(encoding="utf-8") as data_file:
+        records = json.load(data_file)
+    return {
+        record["channel"]: (
+            np.asarray(record["wavelength"]["value"], dtype=float),
+            np.asarray(record["values"]["value"], dtype=float),
+        )
+        for record in records
+    }
+
+
+SENSOR_CURVES = _load_sensor_curves()
+
+
+def _prepare_curve(
+    wavelengths_nm: np.ndarray,
+    values: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    order = np.argsort(wavelengths_nm)
+    wavelengths = wavelengths_nm[order]
+    sorted_values = values[order]
+    unique_wavelengths, unique_indices = np.unique(wavelengths, return_index=True)
+    return unique_wavelengths, sorted_values[unique_indices], np.gradient(sorted_values, wavelengths)[unique_indices]
+
+
+def interpolate_sensor_response(channel: str, wavelength_nm: np.ndarray | float) -> np.ndarray:
+    """Smoothly interpolate one sensor channel and clamp outside its data range."""
+    wavelengths, values = SENSOR_CURVES[channel]
+    source_wavelengths, source_values, slopes = _prepare_curve(wavelengths, values)
+    query = np.asarray(wavelength_nm, dtype=float)
+    positions = np.searchsorted(source_wavelengths, query, side="right") - 1
+    positions = np.clip(positions, 0, len(source_wavelengths) - 2)
+    left_wavelength = source_wavelengths[positions]
+    right_wavelength = source_wavelengths[positions + 1]
+    span = right_wavelength - left_wavelength
+    fraction = np.clip((query - left_wavelength) / span, 0, 1)
+    left_value = source_values[positions]
+    right_value = source_values[positions + 1]
+    left_slope = slopes[positions]
+    right_slope = slopes[positions + 1]
+    smooth_value = (
+        (2 * fraction**3 - 3 * fraction**2 + 1) * left_value
+        + (fraction**3 - 2 * fraction**2 + fraction) * span * left_slope
+        + (-2 * fraction**3 + 3 * fraction**2) * right_value
+        + (fraction**3 - fraction**2) * span * right_slope
+    )
+    return np.clip(smooth_value, 0, 1)
+
+
+def sensor_response_curve(channel: str, wavelength_nm: np.ndarray) -> np.ndarray:
+    """Return a smooth sensor curve over the requested wavelength grid."""
+    return interpolate_sensor_response(channel, wavelength_nm)
+
+
+def integrated_sensor_signal(
+    channel: str,
+    center_nm: float,
+    bandwidth_nm: float,
+    intensity: float,
+) -> float:
+    """Integrate line intensity times sensor response across its passband."""
+    if intensity <= 0:
+        return 0.0
+    wavelengths = np.linspace(center_nm - 4 * bandwidth_nm, center_nm + 4 * bandwidth_nm, 401)
+    line_profile = intensity * super_gaussian_profile(wavelengths, center_nm, bandwidth_nm)
+    response = interpolate_sensor_response(channel, wavelengths)
+    return float(np.trapezoid(line_profile * response, wavelengths))
+
+
+def sensor_channel_signals(
+    intensities: dict[str, float],
+    use_sensor_response: bool = False,
+    bandwidth_nm: float = 6.0,
+) -> np.ndarray:
+    """Return the summed R, G and B signals before display formatting."""
     rgb = np.zeros(3)
+    total_intensity = sum(max(value, 0) for value in intensities.values())
     for name, intensity in intensities.items():
-        color = CHANNELS[name]["color"]
-        rgb += np.array([int(color[index:index + 2], 16) for index in (1, 3, 5)]) * intensity
-    if rgb.max() > 0:
+        if intensity <= 0:
+            continue
+        if use_sensor_response:
+            line_rgb = np.array([
+                integrated_sensor_signal(
+                    channel,
+                    CHANNELS[name]["wavelength_nm"],
+                    bandwidth_nm,
+                    intensity,
+                )
+                for channel in ("RED", "GREEN", "BLUE")
+            ])
+        else:
+            color = CHANNELS[name]["color"]
+            line_rgb = np.array(
+                [int(color[index:index + 2], 16) for index in (1, 3, 5)],
+                dtype=float,
+            )
+        rgb += line_rgb
+    return rgb
+
+
+def ideal_sensor_color(
+    intensities: dict[str, float],
+    use_sensor_response: bool = False,
+    bandwidth_nm: float = 6.0,
+) -> str:
+    """Mix ideal spectral colors or integrated sensor-channel signals."""
+    rgb = sensor_channel_signals(intensities, use_sensor_response, bandwidth_nm)
+    total_intensity = sum(max(value, 0) for value in intensities.values())
+    if use_sensor_response and total_intensity > 0:
+        rgb = rgb / total_intensity * (255 / 10)
+    elif rgb.max() > 0:
         rgb = rgb / rgb.max() * 255
     return "rgb({:.0f}, {:.0f}, {:.0f})".format(*rgb)
 
