@@ -6,11 +6,14 @@ st.set_page_config(page_title="RGBtoNB", page_icon="✦", layout="wide")
 
 from src.rgbtonb.physics import (
     CHANNELS,
+    continuum_channel_signals,
     ideal_sensor_color,
+    line_channel_signals,
     sensor_display_values,
     sensor_channel_signals,
     sensor_response_curve,
     super_gaussian_profile,
+    wavelength_to_rgb_channels,
 )
 
 
@@ -56,7 +59,9 @@ with st.sidebar:
     bandwidth = st.slider("Filterbandbreite (nm)", 1.0, 10.0, 6.0, 0.5)
     use_sensor_response = st.toggle("Sensor-Empfindlichkeit anzeigen", value=False)
     normalize_to_max = st.toggle("Sensor-Signal auf Maximum normieren", value=False)
+    show_spectral_rgb = st.toggle("Spektrale RGB-Referenzkurven anzeigen", value=False)
     bit_depth = st.selectbox("Anzeige-Bittiefe", (8, 10, 12, 16), index=3)
+    white_continuum = st.slider("Weißes Kontinuum", 0, 100, 0)
     st.divider()
     intensities = {
         name: st.slider(f"{name} Intensität", 0, 100, default)
@@ -69,10 +74,11 @@ mixed_color = ideal_sensor_color(
     bandwidth,
     normalize_to_max,
     bit_depth,
+    white_continuum,
 )
-sensor_rgb = sensor_channel_signals(intensities, use_sensor_response, bandwidth)
+sensor_rgb = sensor_channel_signals(intensities, use_sensor_response, bandwidth, white_continuum)
 display_values = (
-    sensor_display_values(intensities, bandwidth, bit_depth, normalize_to_max)
+    sensor_display_values(intensities, bandwidth, bit_depth, normalize_to_max, white_continuum)
     if use_sensor_response
     else sensor_rgb / 255 * ((1 << bit_depth) - 1)
 )
@@ -92,6 +98,15 @@ color_description = (
 
 wavelengths = np.linspace(430, 710, 1400)
 figure = go.Figure()
+if white_continuum > 0:
+    continuum_profile = np.full_like(wavelengths, white_continuum, dtype=float)
+    figure.add_trace(go.Scatter(
+        x=wavelengths,
+        y=continuum_profile,
+        name="Weißes Kontinuum",
+        line={"color": "#f4f7f2", "width": 1.5},
+        opacity=0.7,
+    ))
 for name, channel in CHANNELS.items():
     profile = super_gaussian_profile(wavelengths, channel["wavelength_nm"], bandwidth) * intensities[name]
     figure.add_trace(go.Scatter(
@@ -110,6 +125,67 @@ if use_sensor_response:
             line={"color": color, "width": 1.5, "dash": "dot"},
             opacity=0.8,
         ))
+
+if show_spectral_rgb:
+    spectral_rgb = np.array([wavelength_to_rgb_channels(wavelength) for wavelength in wavelengths])
+    for channel_index, channel_name in enumerate(("RGB Rot", "RGB Grün", "RGB Blau")):
+        figure.add_trace(go.Scatter(
+            x=wavelengths,
+            y=spectral_rgb[:, channel_index] * 100,
+            name=channel_name,
+            line={
+                "color": ("#ff6b6b", "#63e6a1", "#72a7ff")[channel_index],
+                "width": 1.4,
+                "dash": "dashdot",
+            },
+            opacity=0.75,
+        ))
+
+strip_wavelengths = np.linspace(430, 710, 1400)
+spectral_rgb = np.array([
+    wavelength_to_rgb_channels(wavelength)
+    for wavelength in strip_wavelengths
+])
+spectro_signal = np.zeros(strip_wavelengths.size)
+if white_continuum > 0:
+    spectro_signal += white_continuum
+for name, channel in CHANNELS.items():
+    line_profile = super_gaussian_profile(
+        strip_wavelengths,
+        channel["wavelength_nm"],
+        bandwidth,
+    ) * intensities[name]
+    spectro_signal += line_profile
+if use_sensor_response:
+    sensor_rgb = np.column_stack([
+        sensor_response_curve(sensor_channel, strip_wavelengths)
+        for sensor_channel in ("RED", "GREEN", "BLUE")
+    ])
+    spectral_rgb *= sensor_rgb
+spectro_image = np.clip(spectro_signal[:, None] * spectral_rgb, 0, None)
+if spectro_image.max() > 0:
+    spectro_image = np.rint(spectro_image / spectro_image.max() * 255).astype(np.uint8)
+spectro_image = np.repeat(spectro_image[None, :, :], 36, axis=0)
+strip_figure = go.Figure(go.Image(z=spectro_image))
+strip_figure.update_layout(
+    height=150,
+    margin={"l": 0, "r": 0, "t": 0, "b": 28},
+    showlegend=False,
+    paper_bgcolor="#050708",
+    plot_bgcolor="#050708",
+    xaxis={
+        "range": [0, len(strip_wavelengths)],
+        "tickvals": [(value - 430) / (710 - 430) * len(strip_wavelengths) for value in (450, 500, 550, 600, 650, 700)],
+        "ticktext": ["450", "500", "550", "600", "650", "700"],
+        "tickfont": {"color": "#dce9e4", "size": 11},
+        "showgrid": False,
+        "showticklabels": True,
+        "zeroline": False,
+        "linecolor": "#46615e",
+    },
+    yaxis={"range": [0, 36], "showgrid": False, "showticklabels": False, "showline": False, "zeroline": False},
+    shapes=[{"type": "rect", "xref": "paper", "yref": "paper", "x0": 0, "y0": 0, "x1": 1, "y1": 1, "line": {"color": "#46615e", "width": 1}, "fillcolor": "rgba(0,0,0,0)"}],
+)
 
 figure.update_layout(
     height=540,
@@ -133,10 +209,99 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown(f'<div class="panel"><div class="panel-title">{color_title}</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="panel-title">{color_title}</div>', unsafe_allow_html=True)
+st.plotly_chart(strip_figure, use_container_width=True, config={"displayModeBar": False})
 st.markdown(
-    f'<div style="height:110px;background:{mixed_color};border:1px solid #ffffff55;border-radius:6px"></div>'
-    f'<p class="mono" style="color:#b7c8c2;font-size:.8rem">{color_description}<br>{display_rgb_text} · {bit_depth}-Bit<br>{ratio_text} · I = R + G + B<br>'
-    f'{bit_depth}-Bit-Codes: R={display_values[0]:.0f} · G={display_values[1]:.0f} · B={display_values[2]:.0f}</p></div>',
+    f'<p class="mono" style="color:#b7c8c2;font-size:.8rem">{color_description}<br>{display_rgb_text} · {bit_depth}-Bit<br>{ratio_text} · I = R + G + B</p>',
     unsafe_allow_html=True,
 )
+
+scatter_figure = go.Figure()
+line_only_rgb = sensor_channel_signals(intensities, use_sensor_response, bandwidth)
+line_only_total = line_only_rgb.sum()
+if line_only_total > 0:
+    line_only_point = np.array([
+        line_only_rgb[0] / line_only_total,
+        line_only_rgb[1] / line_only_total,
+    ])
+    scatter_figure.add_trace(go.Scatter(
+        x=[line_only_point[0]],
+        y=[line_only_point[1]],
+        mode="markers+text",
+        text=["Linien gesamt"],
+        textposition="top right",
+        textfont={"color": "#f4f7f2", "size": 12},
+        marker={"size": 16, "color": "#f4f7f2", "symbol": "circle-open", "line": {"color": "#f4f7f2", "width": 2}},
+        name="Linien gesamt",
+        hovertemplate="Linien gesamt<br>R/I = %{x:.3f}<br>G/I = %{y:.3f}<extra></extra>",
+    ))
+
+total_rgb = sensor_channel_signals(intensities, use_sensor_response, bandwidth, white_continuum)
+total_signal = total_rgb.sum()
+if total_signal > 0:
+    total_point = np.array([total_rgb[0] / total_signal, total_rgb[1] / total_signal])
+    if line_only_total > 0 and white_continuum > 0:
+        scatter_figure.add_trace(go.Scatter(
+            x=[line_only_point[0], total_point[0]],
+            y=[line_only_point[1], total_point[1]],
+            mode="lines",
+            line={"color": "#f4f7f2", "width": 1.5, "dash": "dot"},
+            name="Kontinuum-Verschiebung",
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+    scatter_figure.add_trace(go.Scatter(
+        x=[total_point[0]],
+        y=[total_point[1]],
+        mode="markers+text",
+        text=["Linien + Kontinuum"],
+        textposition="bottom right",
+        textfont={"color": "#ffffff", "size": 12},
+        marker={"size": 17, "color": "#ffffff", "symbol": "star", "line": {"color": "#56c6c8", "width": 2}},
+        name="Linien + Kontinuum",
+        hovertemplate="Linien + Kontinuum<br>R/I = %{x:.3f}<br>G/I = %{y:.3f}<extra></extra>",
+    ))
+
+for name, channel in CHANNELS.items():
+    line_rgb = line_channel_signals(name, intensities[name], use_sensor_response, bandwidth)
+    line_total = line_rgb.sum()
+    if line_total <= 0:
+        continue
+    scatter_figure.add_trace(go.Scatter(
+        x=[line_rgb[0] / line_total],
+        y=[line_rgb[1] / line_total],
+        mode="markers+text",
+        text=[name],
+        textposition="top center",
+        textfont={"color": "#dce9e4", "size": 12},
+        marker={"size": 13, "color": channel["color"], "line": {"color": "#e8f0eb", "width": 1}},
+        name=name,
+        hovertemplate=f"{name}<br>R/I = %{{x:.3f}}<br>G/I = %{{y:.3f}}<extra></extra>",
+    ))
+if white_continuum > 0:
+    continuum_rgb = continuum_channel_signals(white_continuum, use_sensor_response)
+    continuum_total = continuum_rgb.sum()
+    if continuum_total > 0:
+        scatter_figure.add_trace(go.Scatter(
+            x=[continuum_rgb[0] / continuum_total],
+            y=[continuum_rgb[1] / continuum_total],
+            mode="markers+text",
+            text=["Weißes Kontinuum"],
+            textposition="bottom center",
+            textfont={"color": "#f4f7f2", "size": 12},
+            marker={"size": 13, "color": "#f4f7f2", "symbol": "diamond", "line": {"color": "#e8f0eb", "width": 1}},
+            name="Weißes Kontinuum",
+            hovertemplate="Weißes Kontinuum<br>R/I = %{x:.3f}<br>G/I = %{y:.3f}<extra></extra>",
+        ))
+scatter_figure.update_layout(
+    height=360,
+    margin={"l": 55, "r": 20, "t": 20, "b": 45},
+    template="plotly_dark",
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    showlegend=False,
+    xaxis={"title": "R / I", "range": [0, 1], "gridcolor": "#1b302e"},
+    yaxis={"title": "G / I", "range": [0, 1], "gridcolor": "#1b302e", "scaleanchor": "x", "scaleratio": 1},
+)
+st.markdown('<div class="panel-title">LINE COLOR CONTRIBUTIONS</div>', unsafe_allow_html=True)
+st.plotly_chart(scatter_figure, use_container_width=True, config={"displayModeBar": False})

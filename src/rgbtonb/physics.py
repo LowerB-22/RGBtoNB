@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 
 
-def wavelength_to_rgb(wavelength_nm: float) -> str:
-    """Approximate a visible spectral wavelength as an sRGB color."""
+def wavelength_to_rgb_channels(wavelength_nm: float) -> np.ndarray:
+    """Return normalized sRGB channel values for one visible wavelength."""
     wavelength = float(wavelength_nm)
     if not 380.0 <= wavelength <= 780.0:
         raise ValueError("wavelength_nm must be between 380 and 780 nm")
@@ -32,7 +32,12 @@ def wavelength_to_rgb(wavelength_nm: float) -> str:
     else:
         attenuation = 1.0
 
-    rgb = [round(255 * (channel * attenuation) ** 0.8) for channel in (red, green, blue)]
+    return np.array([(channel * attenuation) ** 0.8 for channel in (red, green, blue)])
+
+
+def wavelength_to_rgb(wavelength_nm: float) -> str:
+    """Approximate a visible spectral wavelength as an sRGB color."""
+    rgb = np.rint(wavelength_to_rgb_channels(wavelength_nm) * 255).astype(int)
     return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
@@ -100,6 +105,24 @@ def sensor_response_curve(channel: str, wavelength_nm: np.ndarray) -> np.ndarray
     return interpolate_sensor_response(channel, wavelength_nm)
 
 
+def continuum_channel_signals(
+    intensity: float,
+    use_sensor_response: bool = False,
+    wavelength_range: tuple[float, float] = (430.0, 710.0),
+) -> np.ndarray:
+    """Return the RGB contribution of a flat white continuum."""
+    if intensity <= 0:
+        return np.zeros(3)
+    width = wavelength_range[1] - wavelength_range[0]
+    if not use_sensor_response:
+        return np.full(3, intensity * width, dtype=float)
+    wavelengths = np.linspace(*wavelength_range, 1001)
+    return intensity * np.array([
+        np.trapezoid(interpolate_sensor_response(channel, wavelengths), wavelengths)
+        for channel in ("RED", "GREEN", "BLUE")
+    ])
+
+
 def integrated_sensor_signal(
     channel: str,
     center_nm: float,
@@ -119,31 +142,40 @@ def sensor_channel_signals(
     intensities: dict[str, float],
     use_sensor_response: bool = False,
     bandwidth_nm: float = 6.0,
+    white_continuum: float = 0.0,
 ) -> np.ndarray:
     """Return the summed R, G and B signals before display formatting."""
     rgb = np.zeros(3)
-    total_intensity = sum(max(value, 0) for value in intensities.values())
     for name, intensity in intensities.items():
-        if intensity <= 0:
-            continue
-        if use_sensor_response:
-            line_rgb = np.array([
-                integrated_sensor_signal(
-                    channel,
-                    CHANNELS[name]["wavelength_nm"],
-                    bandwidth_nm,
-                    intensity,
-                )
-                for channel in ("RED", "GREEN", "BLUE")
-            ])
-        else:
-            color = CHANNELS[name]["color"]
-            line_rgb = np.array(
-                [int(color[index:index + 2], 16) for index in (1, 3, 5)],
-                dtype=float,
-            )
-        rgb += line_rgb
+        rgb += line_channel_signals(name, intensity, use_sensor_response, bandwidth_nm)
+    rgb += continuum_channel_signals(white_continuum, use_sensor_response)
     return rgb
+
+
+def line_channel_signals(
+    name: str,
+    intensity: float,
+    use_sensor_response: bool = False,
+    bandwidth_nm: float = 6.0,
+) -> np.ndarray:
+    """Return one line's R, G and B contributions before normalization."""
+    if intensity <= 0:
+        return np.zeros(3)
+    if use_sensor_response:
+        return np.array([
+            integrated_sensor_signal(
+                channel,
+                CHANNELS[name]["wavelength_nm"],
+                bandwidth_nm,
+                intensity,
+            )
+            for channel in ("RED", "GREEN", "BLUE")
+        ])
+    center_nm = CHANNELS[name]["wavelength_nm"]
+    wavelengths = np.linspace(center_nm - 4 * bandwidth_nm, center_nm + 4 * bandwidth_nm, 401)
+    profile = intensity * super_gaussian_profile(wavelengths, center_nm, bandwidth_nm)
+    spectral_rgb = np.array([wavelength_to_rgb_channels(wavelength) for wavelength in wavelengths])
+    return np.trapezoid(profile[:, None] * spectral_rgb, wavelengths, axis=0)
 
 
 def sensor_display_values(
@@ -151,10 +183,11 @@ def sensor_display_values(
     bandwidth_nm: float,
     bit_depth: int,
     normalize_to_max: bool = False,
+    white_continuum: float = 0.0,
 ) -> np.ndarray:
     """Convert integrated sensor signals to display-code values."""
-    signals = sensor_channel_signals(intensities, True, bandwidth_nm)
-    total_intensity = sum(max(value, 0) for value in intensities.values())
+    signals = sensor_channel_signals(intensities, True, bandwidth_nm, white_continuum)
+    total_intensity = sum(max(value, 0) for value in intensities.values()) + max(white_continuum, 0)
     full_scale = (1 << bit_depth) - 1
     if total_intensity <= 0 or signals.max() <= 0:
         return np.zeros(3)
@@ -171,13 +204,14 @@ def ideal_sensor_color(
     bandwidth_nm: float = 6.0,
     normalize_to_max: bool = False,
     bit_depth: int = 8,
+    white_continuum: float = 0.0,
 ) -> str:
     """Mix ideal spectral colors or integrated sensor-channel signals."""
-    rgb = sensor_channel_signals(intensities, use_sensor_response, bandwidth_nm)
+    rgb = sensor_channel_signals(intensities, use_sensor_response, bandwidth_nm, white_continuum)
     if use_sensor_response:
         full_scale = (1 << bit_depth) - 1
         display_values = sensor_display_values(
-            intensities, bandwidth_nm, bit_depth, normalize_to_max
+            intensities, bandwidth_nm, bit_depth, normalize_to_max, white_continuum
         )
         rgb = display_values / full_scale * 255
     elif rgb.max() > 0:
