@@ -7,6 +7,7 @@ st.set_page_config(page_title="RGBtoNB", page_icon="✦", layout="wide")
 from src.rgbtonb.physics import (
     CHANNELS,
     ideal_sensor_color,
+    sensor_display_values,
     sensor_channel_signals,
     sensor_response_curve,
     super_gaussian_profile,
@@ -54,20 +55,34 @@ with st.sidebar:
     st.markdown('<div class="kicker">SPECTRUM SETUP</div>', unsafe_allow_html=True)
     bandwidth = st.slider("Filterbandbreite (nm)", 1.0, 10.0, 6.0, 0.5)
     use_sensor_response = st.toggle("Sensor-Empfindlichkeit anzeigen", value=False)
+    normalize_to_max = st.toggle("Sensor-Signal auf Maximum normieren", value=False)
+    bit_depth = st.selectbox("Anzeige-Bittiefe", (8, 10, 12, 16), index=3)
     st.divider()
     intensities = {
         name: st.slider(f"{name} Intensität", 0, 100, default)
         for name, default in {"H-alpha": 80, "O III": 65, "S II": 55, "He II": 40}.items()
     }
 
-mixed_color = ideal_sensor_color(intensities, use_sensor_response, bandwidth)
+mixed_color = ideal_sensor_color(
+    intensities,
+    use_sensor_response,
+    bandwidth,
+    normalize_to_max,
+    bit_depth,
+)
 sensor_rgb = sensor_channel_signals(intensities, use_sensor_response, bandwidth)
+display_values = (
+    sensor_display_values(intensities, bandwidth, bit_depth, normalize_to_max)
+    if use_sensor_response
+    else sensor_rgb / 255 * ((1 << bit_depth) - 1)
+)
 sensor_total = sensor_rgb.sum()
 sensor_ratios = sensor_rgb / sensor_total if sensor_total > 0 else np.zeros(3)
 ratio_text = " · ".join(
     f"{channel}/I = {ratio:.3f}"
     for channel, ratio in zip(("R", "G", "B"), sensor_ratios)
 )
+display_rgb_text = "RGB({:.0f}, {:.0f}, {:.0f})".format(*display_values)
 color_title = "IMX571 SENSOR / RESULTING COLOR" if use_sensor_response else "IDEAL SENSOR / RESULTING COLOR"
 color_description = (
     "Sensorantwort aus interpolierten IMX571-Kurven"
@@ -121,6 +136,7 @@ st.markdown(
 st.markdown(f'<div class="panel"><div class="panel-title">{color_title}</div>', unsafe_allow_html=True)
 st.markdown(
     f'<div style="height:110px;background:{mixed_color};border:1px solid #ffffff55;border-radius:6px"></div>'
-    f'<p class="mono" style="color:#b7c8c2;font-size:.8rem">{color_description} · {mixed_color}<br>{ratio_text} · I = R + G + B</p></div>',
+    f'<p class="mono" style="color:#b7c8c2;font-size:.8rem">{color_description}<br>{display_rgb_text} · {bit_depth}-Bit<br>{ratio_text} · I = R + G + B<br>'
+    f'{bit_depth}-Bit-Codes: R={display_values[0]:.0f} · G={display_values[1]:.0f} · B={display_values[2]:.0f}</p></div>',
     unsafe_allow_html=True,
 )

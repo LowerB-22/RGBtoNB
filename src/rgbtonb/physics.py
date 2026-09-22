@@ -146,16 +146,40 @@ def sensor_channel_signals(
     return rgb
 
 
+def sensor_display_values(
+    intensities: dict[str, float],
+    bandwidth_nm: float,
+    bit_depth: int,
+    normalize_to_max: bool = False,
+) -> np.ndarray:
+    """Convert integrated sensor signals to display-code values."""
+    signals = sensor_channel_signals(intensities, True, bandwidth_nm)
+    total_intensity = sum(max(value, 0) for value in intensities.values())
+    full_scale = (1 << bit_depth) - 1
+    if total_intensity <= 0 or signals.max() <= 0:
+        return np.zeros(3)
+    if normalize_to_max:
+        display_values = signals / signals.max() * full_scale
+    else:
+        display_values = signals / total_intensity * (full_scale / 10)
+    return np.rint(display_values)
+
+
 def ideal_sensor_color(
     intensities: dict[str, float],
     use_sensor_response: bool = False,
     bandwidth_nm: float = 6.0,
+    normalize_to_max: bool = False,
+    bit_depth: int = 8,
 ) -> str:
     """Mix ideal spectral colors or integrated sensor-channel signals."""
     rgb = sensor_channel_signals(intensities, use_sensor_response, bandwidth_nm)
-    total_intensity = sum(max(value, 0) for value in intensities.values())
-    if use_sensor_response and total_intensity > 0:
-        rgb = rgb / total_intensity * (255 / 10)
+    if use_sensor_response:
+        full_scale = (1 << bit_depth) - 1
+        display_values = sensor_display_values(
+            intensities, bandwidth_nm, bit_depth, normalize_to_max
+        )
+        rgb = display_values / full_scale * 255
     elif rgb.max() > 0:
         rgb = rgb / rgb.max() * 255
     return "rgb({:.0f}, {:.0f}, {:.0f})".format(*rgb)

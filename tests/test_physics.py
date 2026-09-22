@@ -6,6 +6,7 @@ from src.rgbtonb.physics import (
     integrated_sensor_signal,
     ideal_sensor_color,
     interpolate_sensor_response,
+    sensor_display_values,
     sensor_channel_signals,
     super_gaussian_profile,
     wavelength_to_rgb,
@@ -30,6 +31,13 @@ def test_sensor_response_mixes_all_sensor_channels():
     assert not color.startswith("rgb(255, ")
 
 
+def test_sensor_signal_can_be_normalized_to_maximum():
+    intensities = {"H-alpha": 80, "O III": 65, "S II": 55, "He II": 40}
+    color = ideal_sensor_color(intensities, True, 6.0, normalize_to_max=True)
+    channels = [int(value) for value in color[4:-1].split(", ")]
+    assert max(channels) == 255
+
+
 def test_bandwidth_changes_effective_sensor_response():
     narrow = integrated_sensor_signal("GREEN", 500.7, 1.0, 100)
     wide = integrated_sensor_signal("GREEN", 500.7, 10.0, 100)
@@ -44,6 +52,26 @@ def test_sensor_channel_ratios_sum_to_one():
     intensities = {"H-alpha": 80, "O III": 65, "S II": 55, "He II": 40}
     signals = sensor_channel_signals(intensities, True, 6.0)
     assert np.isclose(signals.sum() / signals.sum(), 1.0)
+
+
+def test_display_values_respect_selected_bit_depth():
+    intensities = {"H-alpha": 80, "O III": 65, "S II": 55, "He II": 40}
+    values = sensor_display_values(intensities, 6.0, 10, normalize_to_max=True)
+    assert values.max() == 1023
+    assert np.all(values >= 0)
+
+
+def test_display_values_support_sensor_16_bit_output():
+    intensities = {"H-alpha": 80, "O III": 65, "S II": 55, "He II": 40}
+    values = sensor_display_values(intensities, 6.0, 16, normalize_to_max=True)
+    assert values.max() == 65535
+    assert np.all(values >= 0)
+
+
+def test_bit_depth_quantizes_display_values():
+    intensities = {"H-alpha": 80, "O III": 65, "S II": 55, "He II": 40}
+    values = sensor_display_values(intensities, 6.0, 8, normalize_to_max=False)
+    assert np.all(values == np.floor(values))
 
 
 def test_sensor_curves_are_smooth_and_bounded():
