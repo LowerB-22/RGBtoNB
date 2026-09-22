@@ -1,93 +1,70 @@
-"""Compact, explainable models for a Sony IMX571 narrowband exposure."""
-
-from dataclasses import dataclass
+"""Small spectral-profile helpers for the narrowband visualizer."""
 
 import numpy as np
 
+
+def wavelength_to_rgb(wavelength_nm: float) -> str:
+    """Approximate a visible spectral wavelength as an sRGB color."""
+    wavelength = float(wavelength_nm)
+    if not 380.0 <= wavelength <= 780.0:
+        raise ValueError("wavelength_nm must be between 380 and 780 nm")
+
+    if wavelength < 440:
+        red, green, blue = -(wavelength - 440) / 60, 0, 1
+    elif wavelength < 490:
+        red, green, blue = 0, (wavelength - 440) / 50, 1
+    elif wavelength < 510:
+        red, green, blue = 0, 1, -(wavelength - 510) / 20
+    elif wavelength < 580:
+        red, green, blue = (wavelength - 510) / 70, 1, 0
+    elif wavelength < 645:
+        red, green, blue = 1, -(wavelength - 645) / 65, 0
+    else:
+        red, green, blue = 1, 0, 0
+
+    if wavelength < 420:
+        attenuation = 0.3 + 0.7 * (wavelength - 380) / 40
+    elif wavelength > 700:
+        attenuation = 0.3 + 0.7 * (780 - wavelength) / 80
+    else:
+        attenuation = 1.0
+
+    rgb = [round(255 * (channel * attenuation) ** 0.8) for channel in (red, green, blue)]
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
 CHANNELS = {
-    "H-alpha": {"wavelength_nm": 656.3, "bandwidth_nm": 6.0, "color": "#ef665b"},
-    "O III": {"wavelength_nm": 500.7, "bandwidth_nm": 6.0, "color": "#56c6c8"},
-    "S II": {"wavelength_nm": 672.4, "bandwidth_nm": 6.0, "color": "#f3bd52"},
+    "H-alpha": {"wavelength_nm": 656.3, "color": wavelength_to_rgb(656.3)},
+    "O III": {"wavelength_nm": 500.7, "color": "#00d98a"},
+    "S II": {"wavelength_nm": 672.4, "color": wavelength_to_rgb(672.4)},
+    "He II": {"wavelength_nm": 468.6, "color": wavelength_to_rgb(468.6)},
 }
 
 
-@dataclass(frozen=True)
-class SensorConfig:
-    """Relevant nominal characteristics of the back-illuminated IMX571."""
-
-    width_px: int = 6248
-    height_px: int = 4176
-    pixel_um: float = 3.76
-    full_well_e: float = 80_000
-    read_noise_e: float = 1.5
-    dark_current_e_s: float = 0.002
-
-
-def sensor_qe(wavelength_nm: np.ndarray | float) -> np.ndarray:
-    """Approximate quantum efficiency curve for a colour IMX571 matrix."""
-    wavelength = np.asarray(wavelength_nm, dtype=float)
-    qe = 0.28 + 0.37 * np.exp(-0.5 * ((wavelength - 610.0) / 150.0) ** 2)
-    return np.clip(qe, 0.12, 0.66)
+def ideal_sensor_color(intensities: dict[str, float]) -> str:
+    """Mix line colors with unchanged intensities for an ideal 100% sensor."""
+    rgb = np.zeros(3)
+    for name, intensity in intensities.items():
+        color = CHANNELS[name]["color"]
+        rgb += np.array([int(color[index:index + 2], 16) for index in (1, 3, 5)]) * intensity
+    if rgb.max() > 0:
+        rgb = rgb / rgb.max() * 255
+    return "rgb({:.0f}, {:.0f}, {:.0f})".format(*rgb)
 
 
-def atmospheric_transmission(wavelength_nm: np.ndarray | float, airmass: float) -> np.ndarray:
-    """A smooth approximation of extinction for an illustrative comparison."""
-    wavelength = np.asarray(wavelength_nm, dtype=float)
-    extinction_mag = airmass * (0.18 * (550.0 / wavelength) ** 1.3)
-    return 10 ** (-0.4 * extinction_mag)
-
-
-def channel_signal(
-    flux_photons_s: float,
-    wavelength_nm: float,
+def super_gaussian_profile(
+    wavelength_nm: np.ndarray | float,
+    center_nm: float,
     bandwidth_nm: float,
-    exposure_s: float,
-    aperture_mm: float,
-    airmass: float,
-    sensor: SensorConfig,
-    dark_temperature_c: float,
-) -> dict[str, float]:
-    """Estimate electrons, shot noise, and SNR for one narrowband channel."""
-    collecting_area_m2 = np.pi * (aperture_mm / 2000.0) ** 2
-    passband_factor = bandwidth_nm / 6.0
-    incoming = flux_photons_s * collecting_area_m2 * passband_factor * exposure_s
-    electrons = incoming * float(sensor_qe(wavelength_nm)) * float(
-        atmospheric_transmission(wavelength_nm, airmass)
-    )
-    thermal_factor = 2 ** ((dark_temperature_c - 20.0) / 6.0)
-    dark_electrons = sensor.dark_current_e_s * thermal_factor * exposure_s
-    noise = np.sqrt(max(electrons + dark_electrons + sensor.read_noise_e**2, 1e-12))
-    return {
-        "electrons": float(electrons),
-        "dark_electrons": float(dark_electrons),
-        "noise": float(noise),
-        "snr": float(electrons / noise),
-        "qe": float(sensor_qe(wavelength_nm)),
-        "transmission": float(atmospheric_transmission(wavelength_nm, airmass)),
-    }
+    order: int = 4,
+) -> np.ndarray:
+    """Return a normalized super-Gaussian with the requested FWHM."""
+    wavelength = np.asarray(wavelength_nm, dtype=float)
+    if bandwidth_nm <= 0:
+        raise ValueError("bandwidth_nm must be positive")
+    if order <= 0:
+        raise ValueError("order must be positive")
+    scaled_distance = 2 * (wavelength - center_nm) / bandwidth_nm
+    return np.exp(-np.log(2) * np.abs(scaled_distance) ** order)
 
 
-def simulate_channels(
-    exposure_s: float = 300.0,
-    aperture_mm: float = 80.0,
-    airmass: float = 1.3,
-    fluxes: dict[str, float] | None = None,
-    dark_temperature_c: float = 0.0,
-    sensor: SensorConfig | None = None,
-) -> dict[str, dict[str, float]]:
-    """Return modelled channel measurements for the current observing setup."""
-    sensor = sensor or SensorConfig()
-    fluxes = fluxes or {"H-alpha": 180.0, "O III": 125.0, "S II": 90.0}
-    return {
-        channel: channel_signal(
-            fluxes[channel],
-            values["wavelength_nm"],
-            values["bandwidth_nm"],
-            exposure_s,
-            aperture_mm,
-            airmass,
-            sensor,
-            dark_temperature_c,
-        )
-        for channel, values in CHANNELS.items()
-    }
