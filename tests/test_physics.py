@@ -69,6 +69,17 @@ def test_white_continuum_is_sensor_weighted():
     assert not np.allclose(response, response[0])
 
 
+def test_sensor_continuum_is_not_divided_across_channels():
+    intensity = 12.0
+    wavelengths = np.linspace(430.0, 710.0, 1001)
+    expected = intensity * np.array([
+        np.trapezoid(interpolate_sensor_response(channel, wavelengths), wavelengths)
+        / (wavelengths[-1] - wavelengths[0])
+        for channel in ("RED", "GREEN", "BLUE")
+    ])
+    assert np.allclose(continuum_channel_signals(intensity, True), expected)
+
+
 def test_continuum_shifts_ideal_combined_color():
     line_only = sensor_channel_signals({"O III": 65}, False, 6.0)
     with_continuum = sensor_channel_signals({"O III": 65}, False, 6.0, 100)
@@ -119,6 +130,17 @@ def test_bit_depth_quantizes_display_values():
     intensities = {"H-alpha": 80, "O III": 65, "S II": 55, "He II": 40}
     values = sensor_display_values(intensities, 6.0, 8, normalize_to_max=False)
     assert np.all(values == np.floor(values))
+
+
+def test_display_values_preserve_absolute_intensity_scale():
+    low = sensor_display_values({"O III": 10}, 6.0, 16, normalize_to_max=False)
+    high = sensor_display_values({"O III": 100}, 6.0, 16, normalize_to_max=False)
+    assert np.allclose(high / low, 10.0, rtol=0.005)
+
+
+def test_sensor_response_is_zero_outside_tabulated_range():
+    for channel in ("RED", "GREEN", "BLUE"):
+        assert interpolate_sensor_response(channel, 710.0) == 0
 
 
 def test_sensor_curves_are_smooth_and_bounded():

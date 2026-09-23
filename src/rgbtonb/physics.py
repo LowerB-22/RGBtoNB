@@ -63,6 +63,7 @@ def _load_sensor_curves() -> dict[str, tuple[np.ndarray, np.ndarray]]:
 
 
 SENSOR_CURVES = _load_sensor_curves()
+DISPLAY_REFERENCE_INTENSITY = 100.0
 
 
 def _prepare_curve(
@@ -77,7 +78,7 @@ def _prepare_curve(
 
 
 def interpolate_sensor_response(channel: str, wavelength_nm: np.ndarray | float) -> np.ndarray:
-    """Smoothly interpolate one sensor channel and clamp outside its data range."""
+    """Smoothly interpolate one sensor channel; return zero outside its data range."""
     wavelengths, values = SENSOR_CURVES[channel]
     source_wavelengths, source_values, slopes = _prepare_curve(wavelengths, values)
     query = np.asarray(wavelength_nm, dtype=float)
@@ -97,7 +98,8 @@ def interpolate_sensor_response(channel: str, wavelength_nm: np.ndarray | float)
         + (-2 * fraction**3 + 3 * fraction**2) * right_value
         + (fraction**3 - fraction**2) * span * right_slope
     )
-    return np.clip(smooth_value, 0, 1)
+    in_range = (query >= source_wavelengths[0]) & (query <= source_wavelengths[-1])
+    return np.where(in_range, np.clip(smooth_value, 0, 1), 0.0)
 
 
 def sensor_response_curve(channel: str, wavelength_nm: np.ndarray) -> np.ndarray:
@@ -120,7 +122,7 @@ def continuum_channel_signals(
         np.trapezoid(interpolate_sensor_response(channel, wavelengths), wavelengths)
         / (wavelength_range[1] - wavelength_range[0])
         for channel in ("RED", "GREEN", "BLUE")
-    ]) / 3.0
+    ])
 
 
 def integrated_sensor_signal(
@@ -188,17 +190,20 @@ def sensor_display_values(
     normalize_to_max: bool = False,
     white_continuum: float = 0.0,
 ) -> np.ndarray:
-    """Convert integrated sensor signals to display-code values."""
+    """Convert integrated sensor signals to relative display-code values.
+
+    Without maximum normalization, 100 intensity units correspond to full scale
+    before clipping; this is an explicit visualization reference, not ADC calibration.
+    """
     signals = sensor_channel_signals(intensities, True, bandwidth_nm, white_continuum)
-    total_intensity = sum(max(value, 0) for value in intensities.values()) + max(white_continuum, 0)
     full_scale = (1 << bit_depth) - 1
-    if total_intensity <= 0 or signals.max() <= 0:
+    if signals.max() <= 0:
         return np.zeros(3)
     if normalize_to_max:
         display_values = signals / signals.max() * full_scale
     else:
-        display_values = signals / total_intensity * (full_scale / 10)
-    return np.rint(display_values)
+        display_values = signals / DISPLAY_REFERENCE_INTENSITY * full_scale
+    return np.rint(np.clip(display_values, 0, full_scale))
 
 
 def ideal_sensor_color(

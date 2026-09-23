@@ -1,6 +1,7 @@
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="RGBtoNB", page_icon="✦", layout="wide")
 
@@ -56,7 +57,7 @@ st.markdown(
 
 with st.sidebar:
     st.markdown('<div class="kicker">SPECTRUM SETUP</div>', unsafe_allow_html=True)
-    bandwidth = st.slider("Filterbandbreite (nm)", 1.0, 10.0, 6.0, 0.5)
+    bandwidth = st.slider("Linienbreite FWHM (nm)", 1.0, 10.0, 6.0, 0.5)
     use_sensor_response = st.toggle("Sensor-Empfindlichkeit anzeigen", value=False)
     normalize_to_max = st.toggle("Sensor-Signal auf Maximum normieren", value=False)
     show_spectral_rgb = st.toggle("Spektrale RGB-Referenzkurven anzeigen", value=False)
@@ -97,24 +98,29 @@ color_description = (
 )
 
 wavelengths = np.linspace(430, 710, 1400)
-figure = go.Figure()
+figure = make_subplots(specs=[[{"secondary_y": True}]])
 if white_continuum > 0:
-    continuum_profile = np.full_like(wavelengths, white_continuum, dtype=float)
+    continuum_profile = np.full_like(
+        wavelengths,
+        white_continuum / (wavelengths[-1] - wavelengths[0]),
+        dtype=float,
+    )
     figure.add_trace(go.Scatter(
         x=wavelengths,
         y=continuum_profile,
         name="Weißes Kontinuum",
         line={"color": "#f4f7f2", "width": 1.5},
         opacity=0.7,
-    ))
+    ), secondary_y=False)
 for name, channel in CHANNELS.items():
-    profile = super_gaussian_profile(wavelengths, channel["wavelength_nm"], bandwidth) * intensities[name]
+    profile_shape = super_gaussian_profile(wavelengths, channel["wavelength_nm"], bandwidth)
+    profile = profile_shape / np.trapezoid(profile_shape, wavelengths) * intensities[name]
     figure.add_trace(go.Scatter(
         x=wavelengths,
         y=profile,
         name=name,
         line={"color": channel["color"], "width": 2.5},
-    ))
+    ), secondary_y=False)
 
 if use_sensor_response:
     for sensor_channel, color in (("RED", "#ff4b4b"), ("GREEN", "#56d68a"), ("BLUE", "#6194ff")):
@@ -124,7 +130,7 @@ if use_sensor_response:
             name=f"Sensor {sensor_channel}",
             line={"color": color, "width": 1.5, "dash": "dot"},
             opacity=0.8,
-        ))
+        ), secondary_y=True)
 
 if show_spectral_rgb:
     spectral_rgb = np.array([wavelength_to_rgb_channels(wavelength) for wavelength in wavelengths])
@@ -139,7 +145,7 @@ if show_spectral_rgb:
                 "dash": "dashdot",
             },
             opacity=0.75,
-        ))
+        ), secondary_y=True)
 
 strip_wavelengths = np.linspace(430, 710, 1400)
 spectral_rgb = np.array([
@@ -215,18 +221,19 @@ figure.update_layout(
         "font": {"color": "#dce9e4", "size": 14},
     },
     xaxis={"title": "Wellenlänge (nm)", "gridcolor": "#1b302e"},
-    yaxis={"title": "relative Intensität / QE (%)", "gridcolor": "#1b302e", "range": [0, 105]},
+    yaxis={"title": "Spektrale Dichte (Intensität / nm)", "gridcolor": "#1b302e"},
+    yaxis2={"title": "Relative Antwort (%)", "range": [0, 105], "overlaying": "y", "side": "right"},
 )
 
 st.markdown('<div class="panel"><div class="panel-title">EMISSION LINES / SUPER-GAUSSIAN PROFILE</div>', unsafe_allow_html=True)
-st.plotly_chart(figure, use_container_width=True, config={"displayModeBar": False})
+st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
 st.markdown(
-    f'<p class="mono" style="color:#b7c8c2;font-size:.8rem">Gemeinsame Bandbreite: {bandwidth:.1f} nm · Profilordnung: 4</p></div>',
+    f'<p class="mono" style="color:#b7c8c2;font-size:.8rem">Linienbreite (FWHM): {bandwidth:.1f} nm · Profilordnung: 4</p></div>',
     unsafe_allow_html=True,
 )
 
 st.markdown(f'<div class="panel-title">{color_title}</div>', unsafe_allow_html=True)
-st.plotly_chart(strip_figure, use_container_width=True, config={"displayModeBar": False})
+st.plotly_chart(strip_figure, width="stretch", config={"displayModeBar": False})
 st.markdown(
     f'<p class="mono" style="color:#b7c8c2;font-size:.8rem">{color_description}<br>{display_rgb_text} · {bit_depth}-Bit<br>{ratio_text} · I = R + G + B</p>',
     unsafe_allow_html=True,
@@ -320,7 +327,7 @@ scatter_figure.update_layout(
     yaxis={"title": "G / I", "range": [0, 1], "gridcolor": "#1b302e", "scaleanchor": "x", "scaleratio": 1},
 )
 st.markdown('<div class="panel-title">LINE COLOR CONTRIBUTIONS</div>', unsafe_allow_html=True)
-st.plotly_chart(scatter_figure, use_container_width=True, config={"displayModeBar": False})
+st.plotly_chart(scatter_figure, width="stretch", config={"displayModeBar": False})
 
 st.markdown('<div class="panel-title">TOTAL COLOR MIXTURE</div>', unsafe_allow_html=True)
 st.markdown(

@@ -4,7 +4,7 @@
 
 RGBtoNB is an interactive spectral visualization model for four astronomical emission lines: H-alpha at 656.3 nm, O III at 500.7 nm, S II at 672.4 nm, and He II at 468.6 nm. The application represents each line by a normalized super-Gaussian transmission profile and combines line emission with an optional flat continuum. The resulting signal is projected into three RGB channels either with an ideal wavelength-independent detector or with interpolated red, green, and blue response curves for a Sony IMX571 one-shot-colour sensor.
 
-The central quantity is the channel signal obtained by integrating spectral intensity multiplied by channel sensitivity over wavelength. This formulation makes filter bandwidth, continuum emission, detector response, and additive line-of-sight components explicit. The model is intended for qualitative instrument and visualization studies. It is not a calibrated photometric reduction pipeline, a radiative-transfer solver, or a substitute for measured filter and detector response data.
+The central quantity is the channel signal obtained by integrating spectral intensity multiplied by channel sensitivity over wavelength. This formulation makes emission-line width, continuum emission, detector response, and additive line-of-sight components explicit. The model is intended for qualitative instrument and visualization studies. It is not a calibrated photometric reduction pipeline, a radiative-transfer solver, or a substitute for measured filter and detector response data.
 
 ## 1. Introduction
 
@@ -15,7 +15,7 @@ RGBtoNB provides an explicit, inspectable model for this compression. Its purpos
 The current implementation exposes the following controls:
 
 - independent intensity controls for H-alpha, O III, S II, and He II;
-- a common filter bandwidth from 1 to 10 nm;
+- a common emission-line FWHM from 1 to 10 nm;
 - an optional white-continuum intensity;
 - an optional IMX571 spectral response;
 - optional maximum normalization for display output;
@@ -31,7 +31,7 @@ The model uses the following assumptions:
 4. Line and continuum signals add linearly at the detector.
 5. The ideal detector has unit sensitivity over the modeled wavelength interval.
 6. The optional sensor model uses the red, green, and blue response curves supplied in `sensor_data/Sony_IMX571.json`.
-7. The supplied sensor curves are interpolated smoothly between tabulated samples and clipped to the physical interval $[0,1]$.
+7. The supplied sensor curves are interpolated smoothly between tabulated samples, clipped to the physical interval $[0,1]$, and set to zero outside their tabulated wavelength range.
 8. The RGB display rectangle is a visualization of the computed channel signals, not a calibrated representation of emitted radiance or detector counts.
 
 No atmospheric transmission, optical throughput, quantum efficiency uncertainty, photon noise, read noise, dark current, saturation model, Bayer demosaicing, extinction correction, or radiative-transfer calculation is currently included.
@@ -79,7 +79,7 @@ $$
 I_i(\lambda)=L_i\widetilde{P}_i(\lambda).
 $$
 
-This normalization gives the bandwidth slider a physically interpretable role: changing bandwidth changes the distribution and the sensor-weighted result, while preserving the integrated line intensity before detector weighting.
+This normalization gives the line-width slider a physically interpretable role: changing the line width changes the distribution and the sensor-weighted result, while preserving the integrated line intensity before detector weighting. It is not a model of filter transmission.
 
 ### 3.3 Continuum
 
@@ -134,7 +134,7 @@ This ideal RGB representation is a display-space approximation. It should not be
 
 ### 4.2 Sony IMX571 response
 
-When sensor response is enabled, the application loads the tabulated RED, GREEN, and BLUE curves from `sensor_data/Sony_IMX571.json`. Each response curve is sorted by wavelength, duplicate wavelength samples are removed, and values are interpolated with a cubic Hermite construction. The resulting response is clipped to $[0,1]$.
+When sensor response is enabled, the application loads the tabulated RED, GREEN, and BLUE curves from `sensor_data/Sony_IMX571.json`. Each response curve is sorted by wavelength, duplicate wavelength samples are removed, and values are interpolated with a cubic Hermite construction. The resulting response is clipped to $[0,1]$ and set to zero outside the tabulated range; no unmeasured edge response is extrapolated.
 
 For each line and sensor channel, the code evaluates
 
@@ -154,7 +154,7 @@ $$
 Q_c=\sum_i Q_{c,i}+Q_{c,C}.
 $$
 
-The response curves in the JSON file are treated as relative channel sensitivities. They are not converted into absolute electrons, quantum efficiency, or calibrated system throughput.
+The response curves in the JSON file are treated as relative channel sensitivities. They are not converted into absolute electrons, quantum efficiency, or calibrated system throughput. No additional factor of $1/3$ is applied in sensor mode; each channel signal is the direct integral for that channel. The factor of $1/3$ in ideal mode only defines the equal three-channel display decomposition.
 
 ## 5. Display Representation
 
@@ -172,7 +172,7 @@ $$
 
 These ratios are invariant under a common multiplicative scaling and describe chromatic composition rather than absolute brightness.
 
-The optional maximum-normalization mode maps the largest display channel to the selected full-scale value. This is a visualization operation and deliberately discards absolute brightness. Without this mode, the display codes retain a relative relationship to the modeled integrated signal.
+The optional maximum-normalization mode maps the largest display channel to the selected full-scale value. This is a visualization operation and deliberately discards absolute brightness. Without this mode, the display codes are proportional to the modeled integrated signal relative to an explicit reference intensity of 100 and are clipped at the selected full-scale value. This reference is a visualization convention, not a calibrated ADC or electron scale.
 
 The application offers 8-, 10-, 12-, and 16-bit display-code scales. A browser RGB rectangle is nevertheless rendered through an 8-bit sRGB CSS colour. The reported higher-bit values are therefore diagnostic values, not proof that the browser or physical display is presenting 16-bit radiometric output.
 
@@ -206,7 +206,7 @@ The following limitations are material for publication-quality interpretation:
 
 - The line intensities are user-controlled and are not generated from a photoionization or shock model.
 - Only one representative wavelength is used for each named feature.
-- The filter response is represented by an idealized super-Gaussian rather than a measured transmission curve.
+- The emission-line profile is represented by an idealized super-Gaussian; the line-width control is not a measured filter-transmission curve.
 - The IMX571 data are relative spectral response data and may not represent a complete camera system response.
 - Optical throughput, atmospheric extinction, detector noise, exposure time, gain, saturation, and quantization noise are not modeled as physical measurements.
 - The visible-spectrum `wavelength_to_rgb` function is an approximate display mapping and cannot reproduce monochromatic spectral perception exactly.
